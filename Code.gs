@@ -1,490 +1,645 @@
-let isRemovingSheets = false;
-
-const VALID_PAYMENT_METHODS = ['Cash', 'UPI', 'Bank Transfer', 'Cheque', 'Others'];
-
-function formatDate(dateStr) {
-  try {
-    let date;
-    if (/^\d{2}\/\d{2}\/\d{4}$/.test(dateStr)) {
-      const parts = dateStr.split('/');
-      const day = parseInt(parts[0], 10);
-      const month = parseInt(parts[1], 10) - 1;
-      const year = parseInt(parts[2], 10);
-      date = new Date(year, month, day);
-    } else if (/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) {
-      date = new Date(dateStr);
-    } else {
-      throw new Error('Invalid date format. Use dd/mm/yyyy or yyyy-mm-dd.');
-    }
-    if (isNaN(date.getTime()) || date.getDate() !== parseInt(dateStr.split(/\/|-/)[0], 10)) {
-      throw new Error('Invalid date.');
-    }
-    const day = ('0' + date.getDate()).slice(-2);
-    const month = ('0' + (date.getMonth() + 1)).slice(-2);
-    const year = date.getFullYear();
-    return `${day}/${month}/${year}`;
-  } catch (e) {
-    logMessage('ERROR', `formatDate failed: ${e.message} Input: ${dateStr}`);
-    throw e;
-  }
-}
+var VALID_PAYMENT_METHODS = ['Cash', 'UPI', 'Bank Transfer', 'Cheque', 'Others'];
 
 function doGet(e) {
   try {
-    SpreadsheetApp.getActiveSpreadsheet().setSpreadsheetLocale('en_IN');
-    const template = HtmlService.createTemplateFromFile('index');
-    return template.evaluate()
+    var template = HtmlService.createTemplateFromFile('index');
+    var htmlOutput = template.evaluate()
       .setTitle('BrickSync')
       .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL)
-      .addMetaTag('viewport', 'width=device-width, initial-scale=1')
-      .addMetaTag('Content-Security-Policy', "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src 'self'");
-  } catch (e) {
-    logMessage('ERROR', `doGet failed: ${e.message}`);
-    return HtmlService.createHtmlOutput(`<h3>Error</h3><p>${e.message}</p>`);
+      .addMetaTag('viewport', 'width=device-width, initial-scale=1.0'); // Moved viewport here
+    return htmlOutput;
+  } catch (err) {
+    logMessage('ERROR', 'doGet failed: ' + err.message);
+    return HtmlService.createHtmlOutput('Error loading application: ' + err.message);
   }
 }
 
 function doPost(e) {
   try {
-    if (!e.postData || !e.postData.contents) {
-      throw new Error('No data provided in POST request');
+    if (!Session.getActiveUser().getEmail()) { // Added authentication
+      return ContentService.createTextOutput(JSON.stringify({ success: false, message: 'Unauthorized access' }))
+        .setMimeType(ContentService.MimeType.JSON);
     }
-    const params = JSON.parse(e.postData.contents);
-    const action = params.action || 'unknown';
-    let response;
-    switch (action) {
-      case 'getData':
-        response = getSheetData(params.sheet);
-        break;
-      case 'addData':
-        response = addSheetData(params.sheet, params.data);
-        break;
-      default:
-        throw new Error(`Unknown action: ${action}`);
+    var params = JSON.parse(e.postData.contents);
+    var action = params.action;
+    var data = params.data;
+
+    if (action === 'getData') {
+      return ContentService.createTextOutput(JSON.stringify(getSheetData(data.sheetName)))
+        .setMimeType(ContentService.MimeType.JSON);
+    } else if (action === 'addData') {
+      var result;
+      if (data.sheetName === 'Customers') {
+        result = addCustomer(data.record);
+      } else if (data.sheetName === 'Sales') {
+        result = addSale(data.record);
+      } else if (data.sheetName === 'Payments') {
+        result = addPayment(data.record);
+      }
+      return ContentService.createTextOutput(JSON.stringify(result))
+        .setMimeType(ContentService.MimeType.JSON);
     }
-    return ContentService.createTextOutput(JSON.stringify(response))
+    return ContentService.createTextOutput(JSON.stringify({ success: false, message: 'Invalid action' }))
       .setMimeType(ContentService.MimeType.JSON);
-  } catch (e) {
-    logMessage('ERROR', `doPost failed: ${e.message}`);
-    return ContentService.createTextOutput(JSON.stringify({ success: false, message: e.message }))
+  } catch (err) {
+    logMessage('ERROR', 'doPost failed: ' + err.message);
+    return ContentService.createTextOutput(JSON.stringify({ success: false, message: err.message }))
       .setMimeType(ContentService.MimeType.JSON);
   }
 }
 
 function include(filename) {
-  try {
-    return HtmlService.createTemplateFromFile(filename).evaluate().getContent();
-  } catch (e) {
-    logMessage('ERROR', `Include failed for ${filename}: ${e.message}`);
-    return `<p>Error loading ${filename}</p>`;
-  }
-}
-
-function getSheetSafely(sheetName) {
-  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(sheetName);
-  if (!sheet) throw new Error(`Sheet ${sheetName} not found`);
-  return sheet;
-}
-
-function getLastContentRow(sheet, columns) {
-  if (!sheet) return 0;
-  columns = columns || ['A'];
-  let maxLastRow = 0;
-  const maxRows = Math.min(sheet.getMaxRows(), CONFIG.MAX_ROWS);
-  for (const column of columns.slice(0, 3)) {
-    const values = sheet.getRange(column + '2:' + column + maxRows).getValues();
-    let lastRow = 0;
-    for (let i = 0; i < values.length; i++) {
-      if (values[i][0] !== '' && values[i][0] != null) lastRow = i + 2;
-    }
-    maxLastRow = Math.max(maxLastRow, lastRow);
-  }
-  return maxLastRow;
+  return HtmlService.createHtmlOutputFromFile(filename).getContent();
 }
 
 function getSheetData(sheetName) {
   try {
-    logMessage('INFO', `Fetching data from ${sheetName}`);
-    const sheet = getSheetSafely(sheetName);
-    const lastRow = getLastContentRow(sheet, ['A', 'B', 'C']);
-    if (lastRow < 2) {
-      logMessage('INFO', `No data found in ${sheetName} (last row < 2)`);
-      return { success: true, data: [] };
+    var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(sheetName);
+    if (!sheet) {
+      logMessage('WARN', 'Sheet ' + sheetName + ' was missing and has been recreated');
+      createRequiredSheets();
+      sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(sheetName);
     }
-    const headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
-    const data = lastRow > 2 ? sheet.getRange(2, 1, lastRow - 1, headers.length).getValues() : [];
-    const records = data.map(row => {
-      const record = {};
-      headers.forEach((header, i) => {
-        record[header] = row[i] !== null && row[i] !== undefined ? row[i] : '';
+    var headers = getHeaders(sheetName);
+    var data = sheet.getDataRange().getValues();
+    var records = [];
+    for (var i = 1; i < data.length && i <= CONFIG.MAX_ROWS; i++) {
+      var record = {};
+      headers.forEach(function(header, index) {
+        record[header] = data[i][index];
       });
-      return record;
-    });
-    logMessage('INFO', `Fetched ${records.length} records from ${sheetName}`);
+      records.push(record);
+    }
     return { success: true, data: records };
-  } catch (e) {
-    logMessage('ERROR', `getSheetData failed for ${sheetName}: ${e.message}`);
-    if (e.message.includes('not found')) {
-      createRequiredSheets();
-      return { success: false, message: `Sheet ${sheetName} was missing and has been recreated. Please try again.` };
-    }
-    return { success: false, message: e.message };
+  } catch (err) {
+    logMessage('ERROR', 'getSheetData failed for ' + sheetName + ': ' + err.message);
+    return { success: false, message: err.message };
   }
 }
 
-function addSheetData(sheetName, data) {
+function getLastContentRow(sheet, columns) {
   try {
-    if (!data) throw new Error('No data provided');
-    const isBatch = Array.isArray(data);
-    const records = isBatch ? data : [data];
-    logMessage('INFO', `Adding ${records.length} record(s) to ${sheetName}`);
-    switch (sheetName) {
-      case 'Customers': return batchAddCustomers(records);
-      case 'Sales': return batchAddSales(records);
-      case 'Payments': return batchAddPayments(records);
-      default: throw new Error(`Cannot write to ${sheetName}`);
+    var lastRow = Math.min(sheet.getLastRow(), CONFIG.MAX_ROWS);
+    var values = sheet.getRange(2, 1, lastRow - 1, sheet.getLastColumn()).getValues();
+    for (var i = values.length - 1; i >= 0; i--) {
+      for (var j = 0; j < columns.length; j++) {
+        if (values[i][columns[j] - 1]) {
+          return i + 2;
+        }
+      }
     }
-  } catch (e) {
-    logMessage('ERROR', `addSheetData failed for ${sheetName}: ${e.message}`);
-    return { success: false, message: e.message };
+    return 1;
+  } catch (err) {
+    logMessage('ERROR', 'getLastContentRow failed: ' + err.message);
+    return 1;
   }
 }
 
-function getCustomers() { return getSheetData('Customers'); }
-function getSales() { return getSheetData('Sales'); }
-function getPayments() { return getSheetData('Payments'); }
-function getTransactions() { return getSheetData('Transactions'); }
+function getCustomers() {
+  return getSheetData('Customers');
+}
+
+function getSales() {
+  return getSheetData('Sales');
+}
+
+function getPayments() {
+  return getSheetData('Payments');
+}
+
+function getTransactions() {
+  return getSheetData('Transactions');
+}
+
 function getBalances() {
-  try {
-    logMessage('INFO', 'Fetching data from Balances');
-    const sheet = getSheetSafely('Balances');
-    const lastRow = getLastContentRow(sheet, ['A']);
-    if (lastRow < 2) {
-      logMessage('INFO', 'No data found in Balances (last row < 2)');
-      return { success: true, data: [] };
-    }
-    const headers = ['Customer', 'Total Sales', 'Total Payments', 'Pending Balance'];
-    const data = lastRow > 2 ? sheet.getRange(2, 1, lastRow - 1, headers.length).getValues() : [];
-    const records = data.map(row => ({
-      customer: row[0] || '',
-      sales: parseFloat(row[1]) || 0,
-      payments: parseFloat(row[2]) || 0,
-      balance: parseFloat(row[3]) || 0
-    }));
-    logMessage('INFO', `Fetched ${records.length} records from Balances`);
-    return { success: true, data: records };
-  } catch (e) {
-    logMessage('ERROR', `getBalances failed: ${e.message}`);
-    if (e.message.includes('not found')) {
-      createRequiredSheets();
-      return { success: false, message: 'Sheet Balances was missing and has been recreated. Please try again.' };
-    }
-    return { success: false, message: e.message };
-  }
+  return getSheetData('Balances');
 }
 
-function addCustomer(customerData) {
+function generateId(prefix) { // Added for UUID generation
+  return prefix + '-' + Utilities.getUuid().slice(0, 8);
+}
+
+function addCustomer(customer) {
+  var lock = LockService.getScriptLock(); // Added LockService
   try {
-    if (!customerData.name) throw new Error('Missing required field: name');
-    const sheet = getSheetSafely('Customers');
-    const lastRow = getLastContentRow(sheet, ['A']) + 1;
-    const customerId = 'CUST' + lastRow.toString().padStart(4, '0');
-    sheet.getRange('A' + lastRow + ':B' + lastRow).setValues([[customerId, customerData.name]]);
+    lock.waitLock(10000);
+    var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('Customers');
+    if (!sheet) {
+      createRequiredSheets();
+      sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('Customers');
+    }
+    var name = customer.name ? customer.name.trim() : '';
+    if (!name) {
+      return { success: false, message: 'Customer name is required' };
+    }
+    var data = sheet.getDataRange().getValues();
+    for (var i = 1; i < data.length; i++) {
+      if (data[i][1].toLowerCase() === name.toLowerCase()) {
+        return { success: false, message: 'Customer already exists' };
+      }
+    }
+    var customerId = generateId('CUST'); // Changed to UUID
+    sheet.appendRow([customerId, name]);
     SpreadsheetApp.flush();
-    logMessage('INFO', `Added customer ${customerData.name} at A${lastRow}`);
-    return { success: true, message: 'Customer added', customerId: customerId };
-  } catch (e) {
-    logMessage('ERROR', `addCustomer failed: ${e.message}`);
-    return { success: false, message: e.message };
+    logMessage('INFO', 'Added customer: ' + name);
+    Utils.invalidateCustomerCache();
+    return { success: true, message: 'Customer added successfully' };
+  } catch (err) {
+    logMessage('ERROR', 'addCustomer failed: ' + err.message);
+    return { success: false, message: err.message };
+  } finally {
+    lock.releaseLock();
   }
 }
 
 function batchAddCustomers(customers) {
   try {
-    if (!customers.length) throw new Error('No customers provided');
-    const sheet = getSheetSafely('Customers');
-    const lastRow = getLastContentRow(sheet, ['A']) + 1;
-    const values = customers.map((customer, i) => {
-      if (!customer.name) throw new Error(`Missing name at index ${i}`);
-      return ['CUST' + (lastRow + i).toString().padStart(4, '0'), customer.name];
+    var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('Customers');
+    if (!sheet) {
+      createRequiredSheets();
+      sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('Customers');
+    }
+    var existingNames = sheet.getDataRange().getValues().slice(1).map(function(row) { return row[1].toLowerCase(); });
+    var newCustomers = [];
+    customers.forEach(function(customer) {
+      var name = customer.name ? customer.name.trim() : '';
+      if (name && existingNames.indexOf(name.toLowerCase()) === -1) {
+        newCustomers.push([generateId('CUST'), name]); // Changed to UUID
+        existingNames.push(name.toLowerCase());
+      }
     });
-    sheet.getRange('A' + lastRow + ':B' + (lastRow + values.length - 1)).setValues(values);
-    SpreadsheetApp.flush();
-    logMessage('INFO', `Added ${values.length} customers at A${lastRow}`);
-    return { success: true, message: `${values.length} customers added` };
-  } catch (e) {
-    logMessage('ERROR', `batchAddCustomers failed: ${e.message}`);
-    return { success: false, message: e.message };
+    if (newCustomers.length > 0) {
+      sheet.getRange(sheet.getLastRow() + 1, 1, newCustomers.length, 2).setValues(newCustomers);
+      SpreadsheetApp.flush();
+      logMessage('INFO', 'Batch added ' + newCustomers.length + ' customers');
+      Utils.invalidateCustomerCache();
+      return { success: true, message: newCustomers.length + ' customers added successfully' };
+    }
+    return { success: false, message: 'No new customers to add' };
+  } catch (err) {
+    logMessage('ERROR', 'batchAddCustomers failed: ' + err.message);
+    return { success: false, message: err.message };
   }
 }
 
-function deleteCustomer(customerData) {
+function deleteCustomer(customerId) {
+  var lock = LockService.getScriptLock(); // Added LockService
   try {
-    if (!customerData.customerId) throw new Error('Missing required field: customerId');
-    const sheet = getSheetSafely('Customers');
-    const data = sheet.getRange('A2:A' + sheet.getLastRow()).getValues();
-    let rowIndex = -1;
-    for (let i = 0; i < data.length; i++) {
-      if (data[i][0] === customerData.customerId) {
-        rowIndex = i + 2;
+    lock.waitLock(10000);
+    var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('Customers');
+    if (!sheet) {
+      return { success: false, message: 'Customers sheet not found' };
+    }
+    var data = sheet.getDataRange().getValues();
+    var rowIndex = -1;
+    for (var i = 1; i < data.length; i++) {
+      if (data[i][0] === customerId) {
+        rowIndex = i + 1;
         break;
       }
     }
-    if (rowIndex === -1) throw new Error(`Customer ID ${customerData.customerId} not found`);
-    Utils.clearFullRow(sheet, rowIndex);
+    if (rowIndex === -1) {
+      return { success: false, message: 'Customer not found' };
+    }
+    var salesSheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('Sales');
+    var paymentsSheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('Payments');
+    var salesData = salesSheet.getDataRange().getValues();
+    var paymentsData = paymentsSheet.getDataRange().getValues();
+    for (var i = 1; i < salesData.length; i++) {
+      if (salesData[i][2] === data[rowIndex - 1][1]) {
+        return { success: false, message: 'Cannot delete customer with associated sales' };
+      }
+    }
+    for (var i = 1; i < paymentsData.length; i++) {
+      if (paymentsData[i][2] === data[rowIndex - 1][1]) {
+        return { success: false, message: 'Cannot delete customer with associated payments' };
+      }
+    }
     sheet.deleteRow(rowIndex);
     SpreadsheetApp.flush();
-    logMessage('INFO', `Deleted customer ${customerData.customerId} at row ${rowIndex}`);
-    return { success: true, message: 'Customer deleted' };
-  } catch (e) {
-    logMessage('ERROR', `deleteCustomer failed: ${e.message}`);
-    return { success: false, message: e.message };
+    logMessage('INFO', 'Deleted customer: ' + customerId);
+    Utils.invalidateCustomerCache();
+    return { success: true, message: 'Customer deleted successfully' };
+  } catch (err) {
+    logMessage('ERROR', 'deleteCustomer failed: ' + err.message);
+    return { success: false, message: err.message };
+  } finally {
+    lock.releaseLock();
   }
 }
 
-function updateCustomer(customerData) {
+function updateCustomer(customer) {
   try {
-    if (!customerData.customerId || !customerData.name) {
-      throw new Error('Missing required fields: customerId, name');
+    var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('Customers');
+    if (!sheet) {
+      return { success: false, message: 'Customers sheet not found' };
     }
-    const sheet = getSheetSafely('Customers');
-    const data = sheet.getRange('A2:B' + sheet.getLastRow()).getValues();
-    let found = false;
-    for (let i = 0; i < data.length; i++) {
-      if (data[i][0] === customerData.customerId) {
-        sheet.getRange('B' + (i + 2)).setValue(customerData.name);
-        found = true;
+    var data = sheet.getDataRange().getValues();
+    var rowIndex = -1;
+    for (var i = 1; i < data.length; i++) {
+      if (data[i][0] === customer.customerId) {
+        rowIndex = i + 1;
         break;
       }
     }
-    if (!found) throw new Error(`Customer ID ${customerData.customerId} not found`);
+    if (rowIndex === -1) {
+      return { success: false, message: 'Customer not found' };
+    }
+    var newName = customer.name ? customer.name.trim() : '';
+    if (!newName) {
+      return { success: false, message: 'Customer name is required' };
+    }
+    for (var i = 1; i < data.length; i++) {
+      if (i !== rowIndex - 1 && data[i][1].toLowerCase() === newName.toLowerCase()) {
+        return { success: false, message: 'Customer name already exists' };
+      }
+    }
+    var oldName = data[rowIndex - 1][1];
+    sheet.getRange(rowIndex, 2).setValue(newName);
+    var salesSheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('Sales');
+    var paymentsSheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('Payments');
+    var salesData = salesSheet.getDataRange().getValues();
+    var paymentsData = paymentsSheet.getDataRange().getValues();
+    for (var i = 1; i < salesData.length; i++) {
+      if (salesData[i][2] === oldName) {
+        salesSheet.getRange(i + 1, 3).setValue(newName);
+      }
+    }
+    for (var i = 1; i < paymentsData.length; i++) {
+      if (paymentsData[i][2] === oldName) {
+        paymentsSheet.getRange(i + 1, 3).setValue(newName);
+      }
+    }
     SpreadsheetApp.flush();
-    logMessage('INFO', `Updated customer ${customerData.customerId}`);
-    return { success: true, message: 'Customer updated' };
-  } catch (e) {
-    logMessage('ERROR', `updateCustomer failed: ${e.message}`);
-    return { success: false, message: e.message };
+    logMessage('INFO', 'Updated customer: ' + customer.customerId + ' to ' + newName);
+    Utils.invalidateCustomerCache();
+    return { success: true, message: 'Customer updated successfully' };
+  } catch (err) {
+    logMessage('ERROR', 'updateCustomer failed: ' + err.message);
+    return { success: false, message: err.message };
   }
 }
 
-function addSale(saleData) {
+function addSale(sale) {
+  var lock = LockService.getScriptLock(); // Added LockService
   try {
-    if (!saleData || !saleData.customer || !saleData.date) {
-      throw new Error('Missing required fields: customer, date');
+    lock.waitLock(10000);
+    var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('Sales');
+    if (!sheet) {
+      createRequiredSheets();
+      sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('Sales');
     }
-    saleData.date = formatDate(saleData.date);
-    if (saleData.quantity < 0 || saleData.rate < 0 || saleData.vehicleRent < 0 || saleData.paymentReceived < 0) {
-      throw new Error('Negative values not allowed');
+    var date = formatDate(sale.date);
+    if (!date) {
+      return { success: false, message: 'Invalid date format' };
     }
-    if (saleData.paymentMethod && !VALID_PAYMENT_METHODS.includes(saleData.paymentMethod)) {
-      throw new Error(`Invalid payment method: ${saleData.paymentMethod}`);
+    var customer = sale.customer ? sale.customer.trim() : '';
+    if (!customer) {
+      return { success: false, message: 'Customer is required' };
     }
-    const salesSheet = getSheetSafely('Sales');
-    const customersSheet = getSheetSafely('Customers');
-    let customerId = '';
-    const customerRange = customersSheet.getRange('B2:B' + CONFIG.DROPDOWN_ROWS);
-    const foundCell = customerRange.createTextFinder(saleData.customer)
-      .matchEntireCell(true)
-      .findNext();
-    if (foundCell) {
-      customerId = foundCell.offset(0, -1).getValue();
-    } else {
-      const lastRow = getLastContentRow(customersSheet, ['A']) + 1;
-      customerId = 'CUST' + lastRow.toString().padStart(4, '0');
-      customersSheet.getRange('A' + lastRow + ':B' + lastRow).setValues([[customerId, saleData.customer]]);
+    var customersSheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('Customers');
+    var customerExists = false;
+    var customerData = customersSheet.getRange(2, 2, Math.min(customersSheet.getLastRow() - 1, CONFIG.DROPDOWN_ROWS)).getValues(); // Used DROPDOWN_ROWS
+    for (var i = 0; i < customerData.length; i++) {
+      if (customerData[i][0] && customerData[i][0].toLowerCase() === customer.toLowerCase()) {
+        customer = customerData[i][0];
+        customerExists = true;
+        break;
+      }
     }
-    const lastRow = getLastContentRow(salesSheet, ['A']) + 1;
-    salesSheet.getRange('A' + lastRow + ':J' + lastRow).setValues([[
-      saleData.date,
-      saleData.saleId || 'SALE' + lastRow.toString().padStart(4, '0'),
-      saleData.customer,
-      saleData.quantity || 0,
-      saleData.rate || 0,
-      saleData.vehicleRent || 0,
-      saleData.amount || 0,
-      saleData.paymentMethod || '',
-      saleData.paymentReceived || 0,
-      saleData.remarks || ''
-    ]]);
-    salesSheet.getRange('W' + lastRow).setValue(customerId);
-    const formulas = [
-      `=IF(A${lastRow}<>"","Sale","")`,
-      `=K${lastRow}`, `=A${lastRow}`, `=B${lastRow}`, `=C${lastRow}`, `=D${lastRow}`, `=E${lastRow}`, `=F${lastRow}`, `=G${lastRow}`, `=H${lastRow}`, `=I${lastRow}`, `=J${lastRow}`
-    ];
-    salesSheet.getRange('K' + lastRow + ':V' + lastRow).setFormulas([formulas]);
+    if (!customerExists) {
+      var addCustomerResult = addCustomer({ name: customer });
+      if (!addCustomerResult.success) {
+        return addCustomerResult;
+      }
+    }
+    var quantity = parseFloat(sale.quantity);
+    var rate = parseFloat(sale.rate);
+    var vehicleRent = parseFloat(sale.vehicleRent) || 0;
+    var paymentReceived = parseFloat(sale.paymentReceived) || 0;
+    if (isNaN(quantity) || quantity <= 0) {
+      return { success: false, message: 'Invalid quantity' };
+    }
+    if (isNaN(rate) || rate <= 0) {
+      return { success: false, message: 'Invalid rate' };
+    }
+    if (isNaN(vehicleRent) || vehicleRent < 0) {
+      return { success: false, message: 'Invalid vehicle rent' };
+    }
+    if (isNaN(paymentReceived) || paymentReceived < 0) {
+      return { success: false, message: 'Invalid payment received' };
+    }
+    var paymentMethod = sale.paymentMethod ? sale.paymentMethod.trim() : '';
+    if (paymentMethod && VALID_PAYMENT_METHODS.indexOf(paymentMethod) === -1) {
+      return { success: false, message: 'Invalid payment method' };
+    }
+    if (paymentMethod && paymentReceived === 0) {
+      return { success: false, message: 'Payment received must be greater than 0 when payment method is specified' };
+    }
+    var amount = (quantity * rate) + vehicleRent;
+    var saleId = generateId('SALE'); // Changed to UUID
+    var remarks = sale.remarks ? sale.remarks.trim() : '';
+    var row = [date, saleId, customer, quantity, rate, vehicleRent, amount, paymentMethod, paymentReceived, remarks];
+    sheet.appendRow(row);
+    sheet.getRange(sheet.getLastRow(), 7).setFormula('=D' + sheet.getLastRow() + '*E' + sheet.getLastRow() + '+F' + sheet.getLastRow());
     SpreadsheetApp.flush();
-    logMessage('INFO', `Added sale at Sales!A${lastRow} Data: ${JSON.stringify(saleData)}`);
-    return { success: true, message: 'Sale added' };
-  } catch (e) {
-    logMessage('ERROR', `addSale failed: ${e.message}`);
-    return { success: false, message: e.message };
+    updateTransactionsAndBalances(null, [customer]);
+    logMessage('INFO', 'Added sale: ' + saleId + ' for customer: ' + customer);
+    return { success: true, message: 'Sale added successfully' };
+  } catch (err) {
+    logMessage('ERROR', 'addSale failed: ' + err.message);
+    return { success: false, message: err.message };
+  } finally {
+    lock.releaseLock();
   }
 }
 
 function batchAddSales(sales) {
   try {
-    if (!sales.length) throw new Error('No sales provided');
-    const results = sales.map((sale, i) => {
-      try {
-        return addSale(sale);
-      } catch (e) {
-        logMessage('ERROR', `Sale at index ${i} failed: ${e.message}`);
-        return { success: false, message: `Index ${i}: ${e.message}` };
+    var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('Sales');
+    if (!sheet) {
+      createRequiredSheets();
+      sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('Sales');
+    }
+    var customersSheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('Customers');
+    var customerData = customersSheet.getDataRange().getValues().slice(1).map(function(row) { return row[1].toLowerCase(); });
+    var newSales = [];
+    var newCustomers = [];
+    sales.forEach(function(sale) {
+      var date = formatDate(sale.date);
+      if (!date) return;
+      var customer = sale.customer ? sale.customer.trim() : '';
+      if (!customer) return;
+      var quantity = parseFloat(sale.quantity);
+      var rate = parseFloat(sale.rate);
+      var vehicleRent = parseFloat(sale.vehicleRent) || 0;
+      var paymentReceived = parseFloat(sale.paymentReceived) || 0;
+      var paymentMethod = sale.paymentMethod ? sale.paymentMethod.trim() : '';
+      var remarks = sale.remarks ? sale.remarks.trim() : '';
+      if (isNaN(quantity) || quantity <= 0 || isNaN(rate) || rate <= 0 || isNaN(vehicleRent) || vehicleRent < 0 || isNaN(paymentReceived) || paymentReceived < 0) {
+        return;
       }
+      if (paymentMethod && VALID_PAYMENT_METHODS.indexOf(paymentMethod) === -1) return;
+      if (paymentMethod && paymentReceived === 0) return;
+      var amount = (quantity * rate) + vehicleRent;
+      var saleId = generateId('SALE'); // Changed to UUID
+      if (customerData.indexOf(customer.toLowerCase()) === -1) {
+        newCustomers.push({ name: customer });
+        customerData.push(customer.toLowerCase());
+      }
+      newSales.push([date, saleId, customer, quantity, rate, vehicleRent, amount, paymentMethod, paymentReceived, remarks]);
     });
-    const successCount = results.filter(r => r.success).length;
-    SpreadsheetApp.flush();
-    logMessage('INFO', `Added ${successCount}/${sales.length} sales`);
-    return { success: successCount === sales.length, message: `Added ${successCount}/${sales.length} sales`, results: results };
-  } catch (e) {
-    logMessage('ERROR', `batchAddSales failed: ${e.message}`);
-    return { success: false, message: e.message };
+    if (newCustomers.length > 0) {
+      var addCustomersResult = batchAddCustomers(newCustomers);
+      if (!addCustomersResult.success) {
+        return addCustomersResult;
+      }
+    }
+    if (newSales.length > 0) {
+      var startRow = sheet.getLastRow() + 1;
+      sheet.getRange(startRow, 1, newSales.length, newSales[0].length).setValues(newSales);
+      for (var i = 0; i < newSales.length; i++) {
+        sheet.getRange(startRow + i, 7).setFormula('=D' + (startRow + i) + '*E' + (startRow + i) + '+F' + (startRow + i));
+      }
+      SpreadsheetApp.flush();
+      var customers = [...new Set(newSales.map(function(sale) { return sale[2]; }))];
+      updateTransactionsAndBalances(null, customers);
+      logMessage('INFO', 'Batch added ' + newSales.length + ' sales');
+      return { success: true, message: newSales.length + ' sales added successfully' };
+    }
+    return { success: false, message: 'No valid sales to add' };
+  } catch (err) {
+    logMessage('ERROR', 'batchAddSales failed: ' + err.message);
+    return { success: false, message: err.message };
   }
 }
 
 function deleteSale(saleId) {
+  var lock = LockService.getScriptLock(); // Added LockService
   try {
-    const sheet = getSheetSafely('Sales');
-    const data = sheet.getRange('B2:B' + sheet.getLastRow()).getValues();
-    let rowIndex = -1;
-    for (let i = 0; i < data.length; i++) {
-      if (data[i][0] === saleId) {
-        rowIndex = i + 2;
+    lock.waitLock(10000);
+    var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('Sales');
+    if (!sheet) {
+      return { success: false, message: 'Sales sheet not found' };
+    }
+    var data = sheet.getDataRange().getValues();
+    var rowIndex = -1;
+    var customer = '';
+    for (var i = 1; i < data.length; i++) {
+      if (data[i][1] === saleId) {
+        rowIndex = i + 1;
+        customer = data[i][2];
         break;
       }
     }
-    if (rowIndex === -1) throw new Error(`Sale ID ${saleId} not found`);
-    Utils.clearFullRow(sheet, rowIndex);
+    if (rowIndex === -1) {
+      return { success: false, message: 'Sale not found' };
+    }
     sheet.deleteRow(rowIndex);
     SpreadsheetApp.flush();
-    logMessage('INFO', `Deleted sale ${saleId} at row ${rowIndex}`);
-    return { success: true, message: 'Sale deleted' };
-  } catch (e) {
-    logMessage('ERROR', `deleteSale failed: ${e.message}`);
-    return { success: false, message: e.message };
+    updateTransactionsAndBalances(null, [customer]);
+    logMessage('INFO', 'Deleted sale: ' + saleId);
+    return { success: true, message: 'Sale deleted successfully' };
+  } catch (err) {
+    logMessage('ERROR', 'deleteSale failed: ' + err.message);
+    return { success: false, message: err.message };
+  } finally {
+    lock.releaseLock();
   }
 }
 
-function addPayment(paymentData) {
+function addPayment(payment) {
+  var lock = LockService.getScriptLock(); // Added LockService
   try {
-    if (!paymentData || !paymentData.customer || !paymentData.date) {
-      throw new Error('Missing required fields: customer, date');
+    lock.waitLock(10000);
+    var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('Payments');
+    if (!sheet) {
+      createRequiredSheets();
+      sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('Payments');
     }
-    paymentData.date = formatDate(paymentData.date);
-    if (paymentData.paymentReceived < 0) throw new Error('Negative payment not allowed');
-    if (paymentData.paymentMethod && !VALID_PAYMENT_METHODS.includes(paymentData.paymentMethod)) {
-      throw new Error(`Invalid payment method: ${paymentData.paymentMethod}`);
+    var date = formatDate(payment.date);
+    if (!date) {
+      return { success: false, message: 'Invalid date format' };
     }
-    const paymentsSheet = getSheetSafely('Payments');
-    const customersSheet = getSheetSafely('Customers');
-    let customerId = '';
-    const customerRange = customersSheet.getRange('B2:B' + CONFIG.DROPDOWN_ROWS);
-    const foundCell = customerRange.createTextFinder(paymentData.customer)
-      .matchEntireCell(true)
-      .findNext();
-    if (foundCell) {
-      customerId = foundCell.offset(0, -1).getValue();
-    } else {
-      const lastRow = getLastContentRow(customersSheet, ['A']) + 1;
-      customerId = 'CUST' + lastRow.toString().padStart(4, '0');
-      customersSheet.getRange('A' + lastRow + ':B' + lastRow).setValues([[customerId, paymentData.customer]]);
+    var customer = payment.customer ? payment.customer.trim() : '';
+    if (!customer) {
+      return { success: false, message: 'Customer is required' };
     }
-    const lastRow = getLastContentRow(paymentsSheet, ['A']) + 1;
-    paymentsSheet.getRange('A' + lastRow + ':F' + lastRow).setValues([[
-      paymentData.date,
-      paymentData.paymentId || 'PAY' + lastRow.toString().padStart(4, '0'),
-      paymentData.customer,
-      paymentData.paymentMethod || '',
-      paymentData.paymentReceived || 0,
-      paymentData.remarks || ''
-    ]]);
-    paymentsSheet.getRange('H' + lastRow + ':K' + lastRow).setValues([[0, 0, 0, 0]]);
-    const formulas = [
-      `=IF(A${lastRow}<>"","Payment","")`, '', '', '', '',
-      `=G${lastRow}`, `=A${lastRow}`, `=B${lastRow}`, `=C${lastRow}`,
-      `=IF(A${lastRow}<>"",0,"")`, `=IF(A${lastRow}<>"",0,"")`, `=IF(A${lastRow}<>"",0,"")`, `=IF(A${lastRow}<>"",0,"")`,
-      `=D${lastRow}`, `=E${lastRow}`, `=F${lastRow}`
-    ];
-    paymentsSheet.getRange('G' + lastRow + ':V' + lastRow).setFormulas([formulas]);
-    paymentsSheet.getRange('W' + lastRow).setValue(customerId);
+    var customersSheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('Customers');
+    var customerExists = false;
+    var customerData = customersSheet.getRange(2, 2, Math.min(customersSheet.getLastRow() - 1, CONFIG.DROPDOWN_ROWS)).getValues(); // Used DROPDOWN_ROWS
+    for (var i = 0; i < customerData.length; i++) {
+      if (customerData[i][0] && customerData[i][0].toLowerCase() === customer.toLowerCase()) {
+        customer = customerData[i][0];
+        customerExists = true;
+        break;
+      }
+    }
+    if (!customerExists) {
+      var addCustomerResult = addCustomer({ name: customer });
+      if (!addCustomerResult.success) {
+        return addCustomerResult;
+      }
+    }
+    var paymentMethod = payment.paymentMethod ? payment.paymentMethod.trim() : '';
+    if (!paymentMethod || VALID_PAYMENT_METHODS.indexOf(paymentMethod) === -1) {
+      return { success: false, message: 'Invalid payment method' };
+    }
+    var paymentReceived = parseFloat(payment.paymentReceived);
+    if (isNaN(paymentReceived) || paymentReceived <= 0) {
+      return { success: false, message: 'Payment received must be greater than 0' };
+    }
+    var paymentId = generateId('PAY'); // Changed to UUID
+    var remarks = payment.remarks ? payment.remarks.trim() : '';
+    sheet.appendRow([date, paymentId, customer, paymentMethod, paymentReceived, remarks]);
     SpreadsheetApp.flush();
-    logMessage('INFO', `Added payment at Payments!A${lastRow} Data: ${JSON.stringify(paymentData)}`);
-    return { success: true, message: 'Payment added' };
-  } catch (e) {
-    logMessage('ERROR', `addPayment failed: ${e.message}`);
-    return { success: false, message: e.message };
+    updateTransactionsAndBalances(null, [customer]);
+    logMessage('INFO', 'Added payment: ' + paymentId + ' for customer: ' + customer);
+    return { success: true, message: 'Payment added successfully' };
+  } catch (err) {
+    logMessage('ERROR', 'addPayment failed: ' + err.message);
+    return { success: false, message: err.message };
+  } finally {
+    lock.releaseLock();
   }
 }
 
 function batchAddPayments(payments) {
   try {
-    if (!payments.length) throw new Error('No payments provided');
-    const results = payments.map((payment, i) => {
-      try {
-        return addPayment(payment);
-      } catch (e) {
-        logMessage('ERROR', `Payment at index ${i} failed: ${e.message}`);
-        return { success: false, message: `Index ${i}: ${e.message}` };
+    var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('Payments');
+    if (!sheet) {
+      createRequiredSheets();
+      sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('Payments');
+    }
+    var customersSheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('Customers');
+    var customerData = customersSheet.getDataRange().getValues().slice(1).map(function(row) { return row[1].toLowerCase(); });
+    var newPayments = [];
+    var newCustomers = [];
+    payments.forEach(function(payment) {
+      var date = formatDate(payment.date);
+      if (!date) return;
+      var customer = payment.customer ? payment.customer.trim() : '';
+      if (!customer) return;
+      var paymentMethod = payment.paymentMethod ? payment.paymentMethod.trim() : '';
+      var paymentReceived = parseFloat(payment.paymentReceived);
+      var remarks = payment.remarks ? payment.remarks.trim() : '';
+      if (!paymentMethod || VALID_PAYMENT_METHODS.indexOf(paymentMethod) === -1 || isNaN(paymentReceived) || paymentReceived <= 0) {
+        return;
       }
+      var paymentId = generateId('PAY'); // Changed to UUID
+      if (customerData.indexOf(customer.toLowerCase()) === -1) {
+        newCustomers.push({ name: customer });
+        customerData.push(customer.toLowerCase());
+      }
+      newPayments.push([date, paymentId, customer, paymentMethod, paymentReceived, remarks]);
     });
-    const successCount = results.filter(r => r.success).length;
-    SpreadsheetApp.flush();
-    logMessage('INFO', `Added ${successCount}/${payments.length} payments`);
-    return { success: successCount === payments.length, message: `Added ${successCount}/${payments.length} payments`, results: results };
-  } catch (e) {
-    logMessage('ERROR', `batchAddPayments failed: ${e.message}`);
-    return { success: false, message: e.message };
+    if (newCustomers.length > 0) {
+      var addCustomersResult = batchAddCustomers(newCustomers);
+      if (!addCustomersResult.success) {
+        return addCustomersResult;
+      }
+    }
+    if (newPayments.length > 0) {
+      sheet.getRange(sheet.getLastRow() + 1, 1, newPayments.length, newPayments[0].length).setValues(newPayments);
+      SpreadsheetApp.flush();
+      var customers = [...new Set(newPayments.map(function(payment) { return payment[2]; }))];
+      updateTransactionsAndBalances(null, customers);
+      logMessage('INFO', 'Batch added ' + newPayments.length + ' payments');
+      return { success: true, message: newPayments.length + ' payments added successfully' };
+    }
+    return { success: false, message: 'No valid payments to add' };
+  } catch (err) {
+    logMessage('ERROR', 'batchAddPayments failed: ' + err.message);
+    return { success: false, message: err.message };
   }
 }
 
 function deletePayment(paymentId) {
+  var lock = LockService.getScriptLock(); // Added LockService
   try {
-    const sheet = getSheetSafely('Payments');
-    const data = sheet.getRange('B2:B' + sheet.getLastRow()).getValues();
-    let rowIndex = -1;
-    for (let i = 0; i < data.length; i++) {
-      if (data[i][0] === paymentId) {
-        rowIndex = i + 2;
+    lock.waitLock(10000);
+    var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('Payments');
+    if (!sheet) {
+      return { success: false, message: 'Payments sheet not found' };
+    }
+    var data = sheet.getDataRange().getValues();
+    var rowIndex = -1;
+    var customer = '';
+    for (var i = 1; i < data.length; i++) {
+      if (data[i][1] === paymentId) {
+        rowIndex = i + 1;
+        customer = data[i][2];
         break;
       }
     }
-    if (rowIndex === -1) throw new Error(`Payment ID ${paymentId} not found`);
-    Utils.clearFullRow(sheet, rowIndex);
+    if (rowIndex === -1) {
+      return { success: false, message: 'Payment not found' };
+    }
     sheet.deleteRow(rowIndex);
     SpreadsheetApp.flush();
-    logMessage('INFO', `Deleted payment ${paymentId} at row ${rowIndex}`);
-    return { success: true, message: 'Payment deleted' };
-  } catch (e) {
-    logMessage('ERROR', `deletePayment failed: ${e.message}`);
-    return { success: false, message: e.message };
+    updateTransactionsAndBalances(null, [customer]);
+    logMessage('INFO', 'Deleted payment: ' + paymentId);
+    return { success: true, message: 'Payment deleted successfully' };
+  } catch (err) {
+    logMessage('ERROR', 'deletePayment failed: ' + err.message);
+    return { success: false, message: err.message };
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function formatDate(dateStr) {
+  try {
+    if (!dateStr) return null;
+    var regex = /^(\d{1,2})[\/-](\d{1,2})[\/-](\d{4})$/;
+    var match = dateStr.match(regex);
+    if (match) {
+      var day = parseInt(match[1], 10);
+      var month = parseInt(match[2], 10) - 1;
+      var year = parseInt(match[3], 10);
+      var date = new Date(year, month, day);
+      if (date.getFullYear() === year && date.getMonth() === month && date.getDate() === day) {
+        return Utilities.formatDate(date, Session.getScriptTimeZone(), CONFIG.DATE_FORMAT);
+      }
+    }
+    regex = /^(\d{4})-(\d{1,2})-(\d{1,2})$/;
+    match = dateStr.match(regex);
+    if (match) {
+      var year = parseInt(match[1], 10);
+      var month = parseInt(match[2], 10) - 1;
+      var day = parseInt(match[3], 10);
+      var date = new Date(year, month, day);
+      if (date.getFullYear() === year && date.getMonth() === month && date.getDate() === day) {
+        return Utilities.formatDate(date, Session.getScriptTimeZone(), CONFIG.DATE_FORMAT);
+      }
+    }
+    return null;
+  } catch (err) {
+    logMessage('ERROR', 'formatDate failed: ' + err.message);
+    return null;
+  }
+}
+
+function logMessage(level, message) {
+  try {
+    var sanitizedMessage = message.replace(/[<>]/g, ''); // Added sanitization
+    var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('Logs');
+    if (!sheet) {
+      Logger.log('[' + level + '] ' + sanitizedMessage);
+      return;
+    }
+    sheet.appendRow([new Date(), '[' + level + '] ' + sanitizedMessage]);
+    SpreadsheetApp.flush();
+  } catch (err) {
+    Logger.log('[' + level + '] ' + sanitizedMessage);
   }
 }
 
 function initializeApp() {
   try {
     createRequiredSheets();
-    logMessage('INFO', 'App initialized');
-  } catch (e) {
-    logMessage('ERROR', `initializeApp failed: ${e.message}`);
-  }
-}
-
-function logMessage(level, message) {
-  try {
-    let logSheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('Logs');
-    if (!logSheet && !isRemovingSheets) {
-      logSheet = SpreadsheetApp.getActiveSpreadsheet().insertSheet('Logs');
-      logSheet.getRange(1, 1, 1, 2).setValues([['Timestamp', 'Message']]);
-      logSheet.getRange(1, 1, 1, 2).setFontWeight('bold');
-      SpreadsheetApp.flush();
-    }
-    if (logSheet) {
-      const timestamp = new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' });
-      logSheet.appendRow([timestamp, `${level}: ${message}`]);
-    } else {
-      Logger.log(`${level}: ${message}`);
-    }
-  } catch (e) {
-    Logger.log(`logMessage failed: ${e.message} | Original: ${message}`);
+    logMessage('INFO', 'Application initialized');
+  } catch (err) {
+    logMessage('ERROR', 'initializeApp failed: ' + err.message);
   }
 }
