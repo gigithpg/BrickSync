@@ -2,7 +2,6 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>BrickSync</title>
   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet" integrity="sha384-QWTKZyjpPEjISv5WaRU9OFeRpok6YctnYmDr5pNlyT2bRjXh0JMhjY6hW+ALEwIH" crossorigin="anonymous">
   <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" rel="stylesheet">
@@ -81,6 +80,12 @@
       <div class="toast-body">
         <i class="bi bi-check-circle me-2"></i>
         <span id="toastMessage">Operation successful!</span>
+      </div>
+    </div>
+    <div id="errorToast" class="toast bg-danger text-white" role="alert" aria-live="assertive" aria-atomic="true">
+      <div class="toast-body">
+        <i class="bi bi-exclamation-circle me-2"></i>
+        <span id="errorToastMessage">Error occurred!</span>
       </div>
     </div>
   </div>
@@ -503,6 +508,21 @@
   <script>
     const formatter = new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR', minimumFractionDigits: 2 });
 
+    function sanitizeInput(str) {
+      const div = document.createElement('div');
+      div.textContent = str || '';
+      return div.innerHTML.replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    }
+
+    function showErrorToast(message) {
+      const toastEl = document.getElementById('errorToast');
+      if (toastEl) {
+        document.getElementById('errorToastMessage').textContent = message;
+        const toast = new bootstrap.Toast(toastEl, { autohide: true, delay: 3000 });
+        toast.show();
+      }
+    }
+
     function initializeTheme() {
       const savedTheme = localStorage.getItem('theme') || 'light';
       document.body.setAttribute('data-bs-theme', savedTheme);
@@ -538,10 +558,11 @@
         dateFormat: 'd/m/Y',
         allowInput: true,
         clickOpens: true,
+        maxDate: new Date(),
         parseDate: (datestr) => {
           const formats = [
-            /^(\d{1,2})[\/-](\d{1,2})[\/-](\d{4})$/, // dd/mm/yyyy or dd-mm-yyyy
-            /^(\d{4})-(\d{1,2})-(\d{1,2})$/ // yyyy-mm-dd
+            /^(\d{1,2})[\/-](\d{1,2})[\/-](\d{4})$/,
+            /^(\d{4})-(\d{1,2})-(\d{1,2})$/
           ];
           for (const regex of formats) {
             const match = datestr.match(regex);
@@ -619,7 +640,7 @@
         const modal = document.getElementById(modalId);
         if (modal) {
           modal.addEventListener('shown.bs.modal', () => {
-            flatpickr('.flatpickr', { dateFormat: 'd/m/Y', allowInput: true, clickOpens: true });
+            flatpickr('.flatpickr', { dateFormat: 'd/m/Y', allowInput: true, clickOpens: true, maxDate: new Date() });
           });
         }
       });
@@ -867,7 +888,7 @@
               updateBadges(tab, data.data);
             } else {
               console.error(`Error loading ${sheetName}: ${data.message || 'No response'}`);
-              showSuccessToast(`Error loading ${sheetName}: ${data.message || 'Failed to load data'}`);
+              showErrorToast(`Error loading ${sheetName}: ${data.message || 'Failed to load data'}`);
               if (tbody) {
                 tbody.innerHTML = '<tr><td colspan="100" class="text-center">No data available</td></tr>';
               }
@@ -877,7 +898,7 @@
             }
           } else {
             console.error(`Invalid response for ${sheetName}:`, data);
-            showSuccessToast(`Error loading ${sheetName}: Invalid server response`);
+            showErrorToast(`Error loading ${sheetName}: Invalid server response`);
             if (tbody) {
               tbody.innerHTML = '<tr><td colspan="100" class="text-center">Error loading data</td></tr>';
             }
@@ -885,7 +906,7 @@
         })
         .withFailureHandler(err => {
           console.error(`Error loading ${sheetName}:`, err);
-          showSuccessToast(`Error loading ${sheetName}: ${err.message || 'Unknown error'}`);
+          showErrorToast(`Error loading ${sheetName}: ${err.message || 'Unknown error'}`);
           if (tbody) {
             tbody.innerHTML = '<tr><td colspan="100" class="text-center">Error loading data</td></tr>';
           }
@@ -894,102 +915,102 @@
     }
 
     function loadDashboardData() {
-  tableDataCache['customers'] = null;
-  tableDataCache['sales'] = null;
-  tableDataCache['payments'] = null;
-  tableDataCache['balances'] = null;
-  Promise.all([
-    new Promise(resolve => google.script.run
-      .withSuccessHandler(data => resolve(data || { success: false, message: 'Invalid response', data: [] }))
-      .withFailureHandler(err => resolve({ success: false, message: err.message || 'Unknown error', data: [] }))
-      .getCustomers()),
-    new Promise(resolve => google.script.run
-      .withSuccessHandler(data => resolve(data || { success: false, message: 'Invalid response', data: [] }))
-      .withFailureHandler(err => resolve({ success: false, message: err.message || 'Unknown error', data: [] }))
-      .getSales()),
-    new Promise(resolve => google.script.run
-      .withSuccessHandler(data => resolve(data || { success: false, message: 'Invalid response', data: [] }))
-      .withFailureHandler(err => resolve({ success: false, message: err.message || 'Unknown error', data: [] }))
-      .getPayments()),
-    new Promise(resolve => google.script.run
-      .withSuccessHandler(data => resolve(data || { success: false, message: 'Invalid response', data: [] }))
-      .withFailureHandler(err => resolve({ success: false, message: err.message || 'Unknown error', data: [] }))
-      .getBalances())
-  ]).then(([customers, sales, payments, balances]) => {
-    tableDataCache['customers'] = customers.success ? customers.data : [];
-    tableDataCache['sales'] = sales.success ? sales.data : [];
-    tableDataCache['payments'] = payments.success ? payments.data : [];
-    tableDataCache['balances'] = balances.success ? balances.data : [];
-    document.getElementById('dashTotalCustomers').textContent = tableDataCache['customers'].length || 0;
-    const totalSales = tableDataCache['sales'].reduce((sum, row) => sum + (row.Amount || 0), 0);
-    document.getElementById('dashTotalSales').textContent = formatter.format(totalSales);
-    const totalPayments = tableDataCache['payments'].reduce((sum, row) => sum + (row['Payment Received'] || 0), 0);
-    document.getElementById('dashTotalPayments').textContent = formatter.format(totalPayments);
-    const totalPending = tableDataCache['balances'].reduce((sum, row) => sum + (row.balance || 0), 0);
-    document.getElementById('dashPendingBalance').textContent = formatter.format(totalPending);
-    initializeChart(tableDataCache['sales'], tableDataCache['payments']);
-    if (!customers.success || !sales.success || !payments.success || !balances.success) {
-      console.error('Dashboard data load incomplete:', { customers, sales, payments, balances });
-      showSuccessToast('Some dashboard data failed to load. Retrying...');
-      setTimeout(() => loadDashboardData(), 2000);
+      tableDataCache['customers'] = null;
+      tableDataCache['sales'] = null;
+      tableDataCache['payments'] = null;
+      tableDataCache['balances'] = null;
+      Promise.all([
+        new Promise(resolve => google.script.run
+          .withSuccessHandler(data => resolve(data || { success: false, message: 'Invalid response', data: [] }))
+          .withFailureHandler(err => resolve({ success: false, message: err.message || 'Unknown error', data: [] }))
+          .getCustomers()),
+        new Promise(resolve => google.script.run
+          .withSuccessHandler(data => resolve(data || { success: false, message: 'Invalid response', data: [] }))
+          .withFailureHandler(err => resolve({ success: false, message: err.message || 'Unknown error', data: [] }))
+          .getSales()),
+        new Promise(resolve => google.script.run
+          .withSuccessHandler(data => resolve(data || { success: false, message: 'Invalid response', data: [] }))
+          .withFailureHandler(err => resolve({ success: false, message: err.message || 'Unknown error', data: [] }))
+          .getPayments()),
+        new Promise(resolve => google.script.run
+          .withSuccessHandler(data => resolve(data || { success: false, message: 'Invalid response', data: [] }))
+          .withFailureHandler(err => resolve({ success: false, message: err.message || 'Unknown error', data: [] }))
+          .getBalances())
+      ]).then(([customers, sales, payments, balances]) => {
+        tableDataCache['customers'] = customers.success ? customers.data : [];
+        tableDataCache['sales'] = sales.success ? sales.data : [];
+        tableDataCache['payments'] = payments.success ? payments.data : [];
+        tableDataCache['balances'] = balances.success ? balances.data : [];
+        document.getElementById('dashTotalCustomers').textContent = tableDataCache['customers'].length || 0;
+        const totalSales = tableDataCache['sales'].reduce((sum, row) => sum + (row.Amount || 0), 0);
+        document.getElementById('dashTotalSales').textContent = formatter.format(totalSales);
+        const totalPayments = tableDataCache['payments'].reduce((sum, row) => sum + (row['Payment Received'] || 0), 0);
+        document.getElementById('dashTotalPayments').textContent = formatter.format(totalPayments);
+        const totalPending = tableDataCache['balances'].reduce((sum, row) => sum + (row.balance || 0), 0);
+        document.getElementById('dashPendingBalance').textContent = formatter.format(totalPending);
+        initializeChart(tableDataCache['sales'], tableDataCache['payments']);
+        if (!customers.success || !sales.success || !payments.success || !balances.success) {
+          console.error('Dashboard data load incomplete:', { customers, sales, payments, balances });
+          showErrorToast('Some dashboard data failed to load. Retrying...');
+          setTimeout(() => loadDashboardData(), 2000);
+        }
+      }).catch(err => {
+        console.error('Dashboard load error:', err);
+        showErrorToast(`Error loading dashboard: ${err.message || 'Unknown error'}`);
+      });
     }
-  }).catch(err => {
-    console.error('Dashboard load error:', err);
-    showSuccessToast(`Error loading dashboard: ${err.message || 'Unknown error'}`);
-  });
-}
 
     function renderTable(tab, data) {
-  const tbody = document.getElementById(`${tab}Table`)?.querySelector('tbody');
-  const table = document.getElementById(`${tab}Table`);
-  if (!tbody || !table) return;
-  const fragment = document.createDocumentFragment();
-  data.forEach(row => {
-    const tr = document.createElement('tr');
-    const columns = tab === 'transactions' ? [
-      'Type', 'Date', 'Transaction ID', 'Customer', 'Quantity', 'Rate', 'Vehicle Rent', 'Amount', 'Payment Method', 'Payment Received', 'Remarks'
-    ] : tab === 'balances' ? [
-      'Customer', 'Total Sales', 'Total Payments', 'Pending Balance'
-    ] : tab === 'customers' ? [
-      'Customer ID', 'Name'
-    ] : tab === 'sales' ? [
-      'Date', 'Sale ID', 'Customer', 'Quantity', 'Rate', 'Vehicle Rent', 'Amount', 'Payment Method', 'Payment Received', 'Remarks'
-    ] : [
-      'Date', 'Payment ID', 'Customer', 'Payment Method', 'Payment Received', 'Remarks'
-    ];
-    columns.forEach(key => {
-      const td = document.createElement('td');
-      let value = row[key];
-      if (['Rate', 'Vehicle Rent', 'Amount', 'Payment Received', 'Total Sales', 'Total Payments', 'Pending Balance'].includes(key)) {
-        td.textContent = formatter.format(value || 0);
-      } else if (key === 'Date' && value) {
-        const match = value.match(/^(\d{1,2})[\/-](\d{1,2})[\/-](\d{4})$/);
-        if (match) {
-          td.textContent = `${match[1].padStart(2, '0')}/${match[2].padStart(2, '0')}/${match[3]}`;
-          td.dataset.sort = `${match[3]}-${match[2].padStart(2, '0')}-${match[1].padStart(2, '0')}`;
-        } else {
-          console.error(`Invalid date in ${tab} table: ${value}`);
-          td.textContent = value || '';
+      const tbody = document.getElementById(`${tab}Table`)?.querySelector('tbody');
+      const table = document.getElementById(`${tab}Table`);
+      if (!tbody || !table) return;
+      const fragment = document.createDocumentFragment();
+      data.forEach(row => {
+        const tr = document.createElement('tr');
+        const columns = tab === 'transactions' ? [
+          'Type', 'Date', 'Transaction ID', 'Customer', 'Quantity', 'Rate', 'Vehicle Rent', 'Amount', 'Payment Method', 'Payment Received', 'Remarks'
+        ] : tab === 'balances' ? [
+          'Customer', 'Total Sales', 'Total Payments', 'Pending Balance'
+        ] : tab === 'customers' ? [
+          'Customer ID', 'Name'
+        ] : tab === 'sales' ? [
+          'Date', 'Sale ID', 'Customer', 'Quantity', 'Rate', 'Vehicle Rent', 'Amount', 'Payment Method', 'Payment Received', 'Remarks'
+        ] : [
+          'Date', 'Payment ID', 'Customer', 'Payment Method', 'Payment Received', 'Remarks'
+        ];
+        columns.forEach(key => {
+          const td = document.createElement('td');
+          let value = row[key];
+          if (['Rate', 'Vehicle Rent', 'Amount', 'Payment Received', 'Total Sales', 'Total Payments', 'Pending Balance'].includes(key)) {
+            td.textContent = formatter.format(value || 0);
+          } else if (key === 'Date' && value) {
+            const match = value.match(/^(\d{1,2})[\/-](\d{1,2})[\/-](\d{4})$/);
+            if (match) {
+              td.textContent = `${match[1].padStart(2, '0')}/${match[2].padStart(2, '0')}/${match[3]}`;
+              td.dataset.sort = `${match[3]}-${match[2].padStart(2, '0')}-${match[1].padStart(2, '0')}`;
+            } else {
+              console.error(`Invalid date in ${tab} table: ${value}`);
+              td.textContent = value || '';
+            }
+          } else {
+            td.innerHTML = sanitizeInput(value);
+          }
+          tr.appendChild(td);
+        });
+        if (['customers', 'sales', 'payments'].includes(tab)) {
+          const td = document.createElement('td');
+          const idKey = tab === 'customers' ? 'Customer ID' : tab === 'sales' ? 'Sale ID' : 'Payment ID';
+          const name = row[idKey];
+          td.innerHTML = `<button class="btn btn-sm btn-outline-danger" onclick="delete${tab.charAt(0).toUpperCase() + tab.slice(1).replace('s', '')}('${row[idKey]}', '${sanitizeInput(name)}')">Delete</button>`;
+          tr.appendChild(td);
         }
-      } else {
-        td.textContent = value || '';
-      }
-      tr.appendChild(td);
-    });
-    if (['customers', 'sales', 'payments'].includes(tab)) {
-      const td = document.createElement('td');
-      const idKey = tab === 'customers' ? 'Customer ID' : tab === 'sales' ? 'Sale ID' : 'Payment ID';
-      const name = row[idKey];
-      td.innerHTML = `<button class="btn btn-sm btn-outline-danger" onclick="delete${tab.charAt(0).toUpperCase() + tab.slice(1).replace('s', '')}('${row[idKey]}', '${name}')">Delete</button>`;
-      tr.appendChild(td);
+        fragment.appendChild(tr);
+      });
+      tbody.innerHTML = '';
+      tbody.appendChild(fragment);
+      table.classList.remove('loaded');
+      setTimeout(() => table.classList.add('loaded'), 50);
     }
-    fragment.appendChild(tr);
-  });
-  tbody.innerHTML = '';
-  tbody.appendChild(fragment);
-  table.classList.remove('loaded');
-  setTimeout(() => table.classList.add('loaded'), 50);
-}
 
     function updateBadges(tab, data) {
       if (tab === 'customers') {
@@ -1111,69 +1132,14 @@
             });
           } else {
             console.error('Failed to load customers for dropdowns:', data?.message);
-            showSuccessToast(`Error loading customers: ${data?.message || 'Failed to load'}`);
+            showErrorToast(`Error loading customers: ${data?.message || 'Failed to load'}`);
           }
         })
         .withFailureHandler(err => {
           console.error('Error loading customers for dropdowns:', err);
-          showSuccessToast(`Error loading customers: ${err.message || 'Unknown error'}`);
+          showErrorToast(`Error loading customers: ${err.message || 'Unknown error'}`);
         })
         .getCustomers();
-    }
-
-    function addCustomer() {
-      const nameEl = document.getElementById('customerName');
-      const submitBtn = document.getElementById('submitCustomerBtn');
-      const modal = document.getElementById('customerModal');
-      const keepOpen = document.getElementById('keepCustomerOpen')?.checked;
-      if (!nameEl || !modal) return;
-      const name = nameEl.value.trim();
-      if (!name) {
-        showSuccessToast('Please enter a customer name.');
-        return;
-      }
-      if (submitBtn && modal) {
-        const spinner = submitBtn.querySelector('.spinner-border');
-        if (spinner) spinner.classList.remove('d-none');
-        submitBtn.innerHTML = '<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span> Adding...';
-        modal.querySelectorAll('input, select, button').forEach(el => el.disabled = true);
-      }
-      google.script.run
-        .withSuccessHandler(result => {
-          if (result && result.success) {
-            showSuccessToast(result.message);
-            if (!keepOpen) {
-              const customerModal = bootstrap.Modal.getInstance(modal);
-              if (customerModal) customerModal.hide();
-              resetCustomerForm();
-            } else {
-              resetCustomerForm();
-              modal.querySelectorAll('input, select, button').forEach(el => el.disabled = false);
-            }
-            tableDataCache['customers'] = null;
-            loadTableData('customers');
-            populateCustomerDropdowns();
-            loadTableData('dashboard');
-          } else {
-            showSuccessToast(`Error: ${result?.message || 'Failed to add customer'}`);
-            if (submitBtn) {
-              const spinner = submitBtn.querySelector('.spinner-border');
-              if (spinner) spinner.classList.add('d-none');
-              submitBtn.innerHTML = 'Submit';
-            }
-            if (modal) modal.querySelectorAll('input, select, button').forEach(el => el.disabled = false);
-          }
-        })
-        .withFailureHandler(err => {
-          showSuccessToast(`Error: ${err.message || 'Unknown error'}`);
-          if (submitBtn) {
-            const spinner = submitBtn.querySelector('.spinner-border');
-            if (spinner) spinner.classList.add('d-none');
-            submitBtn.innerHTML = 'Submit';
-          }
-          if (modal) modal.querySelectorAll('input, select, button').forEach(el => el.disabled = false);
-        })
-        .addCustomer({ name });
     }
 
     function validateDate(dateStr) {
@@ -1195,306 +1161,327 @@
             day = parseInt(match[3], 10);
           }
           const date = new Date(year, month - 1, day);
-          return !isNaN(date.getTime()) && date.getFullYear() === year && date.getMonth() === month - 1 && date.getDate() === day;
+          const today = new Date();
+          today.setHours(23, 59, 59, 999);
+          if (!isNaN(date.getTime()) && date.getFullYear() === year && date.getMonth() === month - 1 && date.getDate() === day && date <= today) {
+            return `${String(day).padStart(2, '0')}/${String(month).padStart(2, '0')}/${year}`;
+          }
         }
       }
       return false;
     }
 
-    function addSale() {
-      const modal = document.getElementById('salesModal');
-      const submitBtn = document.getElementById('submitSaleBtn');
-      const keepOpen = document.getElementById('keepSalesOpen')?.checked;
-      const dateInput = document.getElementById('saleDate')?.value;
-      if (!validateDate(dateInput)) {
-        showSuccessToast('Invalid date format. Use dd/mm/yyyy or yyyy-mm-dd.');
-        return;
-      }
-      const match = dateInput.match(/^(\d{1,2})[\/-](\d{1,2})[\/-](\d{4})$/) || dateInput.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
-      const saleData = {
-        date: match[0].includes('-') && match[0].length > 8 ? 
-              `${match[3].padStart(2, '0')}/${match[2].padStart(2, '0')}/${match[1]}` : 
-              `${match[1].padStart(2, '0')}/${match[2].padStart(2, '0')}/${match[3]}`,
-        customer: document.getElementById('saleCustomer')?.value,
-        quantity: parseFloat(document.getElementById('saleQuantity')?.value) || 0,
-        rate: parseFloat(document.getElementById('saleRate')?.value) || 0,
-        vehicleRent: parseFloat(document.getElementById('saleVehicleRent')?.value) || 0,
-        amount: updateSaleAmount(),
-        paymentMethod: document.getElementById('salePaymentMethod')?.value,
-        paymentReceived: parseFloat(document.getElementById('salePaymentReceived')?.value) || 0,
-        remarks: document.getElementById('saleRemarks')?.value
-      };
-      if (!saleData.date || !saleData.customer || !saleData.quantity || !saleData.rate) {
-        showSuccessToast('Please fill all required fields.');
-        return;
-      }
+    function validateSaleForm(saleData) {
+      if (saleData.quantity <= 0) return 'Quantity must be greater than 0.';
+      if (saleData.rate <= 0) return 'Rate must be greater than 0.';
+      if (saleData.vehicleRent < 0) return 'Vehicle Rent cannot be negative.';
+      if (saleData.paymentReceived < 0) return 'Payment Received cannot be negative.';
       if (saleData.paymentMethod && saleData.paymentReceived <= 0) {
-        showSuccessToast('Payment Received must be greater than 0 when a Payment Method is selected.');
-        return;
+        return 'Payment Received must be greater than 0 when a Payment Method is selected.';
       }
-      if (submitBtn && modal) {
-        const spinner = submitBtn.querySelector('.spinner-border');
-        if (spinner) spinner.classList.remove('d-none');
-        submitBtn.innerHTML = '<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span> Adding...';
-        modal.querySelectorAll('input, select, button').forEach(el => el.disabled = true);
-      }
-      google.script.run
-        .withSuccessHandler(result => {
-          if (result && result.success) {
-            showSuccessToast(result.message);
-            if (!keepOpen) {
-              const salesModal = bootstrap.Modal.getInstance(modal);
-              if (salesModal) salesModal.hide();
-              resetSalesForm();
-            } else {
-              resetSalesForm();
-              document.getElementById('saleDate').value = saleData.date;
-              document.getElementById('saleCustomer').value = saleData.customer;
-              modal.querySelectorAll('input, select, button').forEach(el => el.disabled = false);
-            }
-            tableDataCache['sales'] = null;
-            tableDataCache['transactions'] = null;
-            tableDataCache['balances'] = null;
-            loadTableData('sales');
-            loadTableData('dashboard');
-            loadTableData('transactions');
-            loadTableData('balances');
-            populateCustomerDropdowns();
-          } else {
-            showSuccessToast(`Error: ${result?.message || 'Failed to add sale'}`);
-            if (submitBtn) {
-              const spinner = submitBtn.querySelector('.spinner-border');
-              if (spinner) spinner.classList.add('d-none');
-              submitBtn.innerHTML = 'Submit';
-            }
-            if (modal) modal.querySelectorAll('input, select, button').forEach(el => el.disabled = false);
-          }
-        })
-        .withFailureHandler(err => {
-          showSuccessToast(`Error: ${err.message || 'Unknown error'}`);
-          if (submitBtn) {
-            const spinner = submitBtn.querySelector('.spinner-border');
-            if (spinner) spinner.classList.add('d-none');
-            submitBtn.innerHTML = 'Submit';
-          }
-          if (modal) modal.querySelectorAll('input, select, button').forEach(el => el.disabled = false);
-        })
-        .addSale(saleData);
+      return true;
     }
+// ... (previous code up to the truncation point)
 
-    function addPayment() {
-      const modal = document.getElementById('paymentModal');
-      const submitBtn = document.getElementById('submitPaymentBtn');
-      const keepOpen = document.getElementById('keepPaymentOpen')?.checked;
-      const dateInput = document.getElementById('paymentDate')?.value;
-      if (!validateDate(dateInput)) {
-        showSuccessToast('Invalid date format. Use dd/mm/yyyy or yyyy-mm-dd.');
-        return;
-      }
-      const match = dateInput.match(/^(\d{1,2})[\/-](\d{1,2})[\/-](\d{4})$/) || dateInput.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
-      const paymentData = {
-        date: match[0].includes('-') && match[0].length > 8 ? 
-              `${match[3].padStart(2, '0')}/${match[2].padStart(2, '0')}/${match[1]}` : 
-              `${match[1].padStart(2, '0')}/${match[2].padStart(2, '0')}/${match[3]}`,
-        customer: document.getElementById('paymentCustomer')?.value,
-        paymentMethod: document.getElementById('paymentMethod')?.value,
-        paymentReceived: parseFloat(document.getElementById('paymentReceived')?.value) || 0,
-        remarks: document.getElementById('paymentRemarks')?.value
-      };
-      if (!paymentData.date || !paymentData.customer || !paymentData.paymentMethod || paymentData.paymentReceived <= 0) {
-        showSuccessToast('Please fill all required fields and ensure Payment Received is greater than 0.');
-        return;
-      }
-      if (submitBtn && modal) {
-        const spinner = submitBtn.querySelector('.spinner-border');
-        if (spinner) spinner.classList.remove('d-none');
-        submitBtn.innerHTML = '<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span> Adding...';
-        modal.querySelectorAll('input, select, button').forEach(el => el.disabled = true);
-      }
-      google.script.run
-        .withSuccessHandler(result => {
-          if (result && result.success) {
-            showSuccessToast(result.message);
-            if (!keepOpen) {
-              const paymentModal = bootstrap.Modal.getInstance(modal);
-              if (paymentModal) paymentModal.hide();
-              resetPaymentForm();
-            } else {
-              resetPaymentForm();
-              document.getElementById('paymentDate').value = paymentData.date;
-              document.getElementById('paymentCustomer').value = paymentData.customer;
-              modal.querySelectorAll('input, select, button').forEach(el => el.disabled = false);
-            }
-            tableDataCache['payments'] = null;
-            tableDataCache['transactions'] = null;
-            tableDataCache['balances'] = null;
-            loadTableData('payments');
-            loadTableData('dashboard');
-            loadTableData('transactions');
-            loadTableData('balances');
-          } else {
-            showSuccessToast(`Error: ${result?.message || 'Failed to add payment'}`);
-            if (submitBtn) {
-              const spinner = submitBtn.querySelector('.spinner-border');
-              if (spinner) spinner.classList.add('d-none');
-              submitBtn.innerHTML = 'Submit';
-            }
-            if (modal) modal.querySelectorAll('input, select, button').forEach(el => el.disabled = false);
-          }
-        })
-        .withFailureHandler(err => {
-          showSuccessToast(`Error: ${err.message || 'Unknown error'}`);
-          if (submitBtn) {
-            const spinner = submitBtn.querySelector('.spinner-border');
-            if (spinner) spinner.classList.add('d-none');
-            submitBtn.innerHTML = 'Submit';
-          }
-          if (modal) modal.querySelectorAll('input, select, button').forEach(el => el.disabled = false);
-        })
-        .addPayment(paymentData);
-    }
-
-    function deleteCustomer(id, name) {
-      if (confirm(`Are you sure you want to delete customer "${name}" (ID: ${id})?`)) {
-        google.script.run
-          .withSuccessHandler(result => {
-            if (result && result.success) {
-              showSuccessToast(result.message);
-              tableDataCache['customers'] = null;
-              loadTableData('customers');
-              loadTableData('dashboard');
-              populateCustomerDropdowns();
-            } else {
-              showSuccessToast(`Error: ${result?.message || 'Failed to delete customer'}`);
-            }
-          })
-          .withFailureHandler(err => {
-            showSuccessToast(`Error: ${err.message || 'Unknown error'}`);
-          })
-          .deleteCustomer(id);
-      }
-    }
-
-    function deleteSale(id, name) {
-      if (confirm(`Are you sure you want to delete sale "${name}" (ID: ${id})?`)) {
-        google.script.run
-          .withSuccessHandler(result => {
-            if (result && result.success) {
-              showSuccessToast(result.message);
-              tableDataCache['sales'] = null;
-              tableDataCache['transactions'] = null;
-              tableDataCache['balances'] = null;
-              loadTableData('sales');
-              loadTableData('dashboard');
-              loadTableData('transactions');
-              loadTableData('balances');
-            } else {
-              showSuccessToast(`Error: ${result?.message || 'Failed to delete sale'}`);
-            }
-          })
-          .withFailureHandler(err => {
-            showSuccessToast(`Error: ${err.message || 'Unknown error'}`);
-          })
-          .deleteSale(id);
-      }
-    }
-
-    function deletePayment(id, name) {
-      if (confirm(`Are you sure you want to delete payment "${name}" (ID: ${id})?`)) {
-        google.script.run
-          .withSuccessHandler(result => {
-            if (result && result.success) {
-              showSuccessToast(result.message);
-              tableDataCache['payments'] = null;
-              tableDataCache['transactions'] = null;
-              tableDataCache['balances'] = null;
-              loadTableData('payments');
-              loadTableData('dashboard');
-              loadTableData('transactions');
-              loadTableData('balances');
-            } else {
-              showSuccessToast(`Error: ${result?.message || 'Failed to delete payment'}`);
-            }
-          })
-          .withFailureHandler(err => {
-            showSuccessToast(`Error: ${err.message || 'Unknown error'}`);
-          })
-          .deletePayment(id);
-      }
-    }
-
-    function togglePaymentReceived(methodId, receivedId) {
-      const method = document.getElementById(methodId);
-      const received = document.getElementById(receivedId);
-      if (method && received) {
-        const hasMethod = method.value !== '';
-        received.disabled = !hasMethod;
-        if (!hasMethod) {
-          received.value = '0';
-        }
-        if (hasMethod && receivedId === 'paymentReceived') {
-          received.required = true;
+function addCustomer() {
+  const nameEl = document.getElementById('customerName');
+  const submitBtn = document.getElementById('submitCustomerBtn');
+  const modal = document.getElementById('customerModal');
+  const keepOpen = document.getElementById('keepCustomerOpen')?.checked;
+  if (!nameEl || !modal) return;
+  const name = nameEl.value.trim();
+  if (!name) {
+    showErrorToast('Please enter a customer name.');
+    return;
+  }
+  if (submitBtn && modal) {
+    const spinner = submitBtn.querySelector('.spinner-border');
+    if (spinner) spinner.classList.remove('d-none');
+    submitBtn.innerHTML = '<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span> Adding...';
+    modal.querySelectorAll('input, select, button').forEach(el => el.disabled = true);
+  }
+  google.script.run
+    .withSuccessHandler(result => {
+      if (result && result.success) {
+        showSuccessToast(result.message);
+        if (!keepOpen) {
+          const customerModal = bootstrap.Modal.getInstance(modal);
+          if (customerModal) customerModal.hide();
+          resetCustomerForm();
         } else {
-          received.required = false;
+          resetCustomerForm();
+          modal.querySelectorAll('input, select, button').forEach(el => el.disabled = false);
+          submitBtn.innerHTML = 'Submit';
         }
+        loadTableData('customers');
+        populateCustomerDropdowns();
+      } else {
+        console.error('Add customer failed:', result?.message);
+        showErrorToast(`Error adding customer: ${result?.message || 'Failed to add customer'}`);
+        modal.querySelectorAll('input, select, button').forEach(el => el.disabled = false);
+        submitBtn.innerHTML = 'Submit';
       }
-    }
+    })
+    .withFailureHandler(err => {
+      console.error('Add customer error:', err);
+      showErrorToast(`Error adding customer: ${err.message || 'Unknown error'}`);
+      modal.querySelectorAll('input, select, button').forEach(el => el.disabled = false);
+      submitBtn.innerHTML = 'Submit';
+    })
+    .addCustomer({ Name: name });
+}
 
-    document.addEventListener('DOMContentLoaded', () => {
-      initializeTheme();
-      initializeFlatpickr();
-      formatCurrencyInputs();
-      setupTabNavigation();
-      loadTableData('dashboard');
-      populateCustomerDropdowns();
+function addSale() {
+  const modal = document.getElementById('salesModal');
+  const submitBtn = document.getElementById('submitSaleBtn');
+  const keepOpen = document.getElementById('keepSalesOpen')?.checked;
+  if (!modal || !submitBtn) return;
 
-      const themeToggle = document.getElementById('theme-toggle');
-      if (themeToggle) {
-        themeToggle.addEventListener('click', toggleTheme);
-      }
+  const saleData = {
+    date: document.getElementById('saleDate')?.value,
+    customer: document.getElementById('saleCustomer')?.value,
+    quantity: parseFloat(document.getElementById('saleQuantity')?.value) || 0,
+    rate: parseFloat(document.getElementById('saleRate')?.value) || 0,
+    vehicleRent: parseFloat(document.getElementById('saleVehicleRent')?.value) || 0,
+    paymentMethod: document.getElementById('salePaymentMethod')?.value,
+    paymentReceived: parseFloat(document.getElementById('salePaymentReceived')?.value) || 0,
+    remarks: document.getElementById('saleRemarks')?.value
+  };
 
-      const saleInputs = ['saleQuantity', 'saleRate', 'saleVehicleRent'];
-      saleInputs.forEach(id => {
-        const input = document.getElementById(id);
-        if (input) {
-          input.addEventListener('input', updateSaleAmount);
+  const dateValid = validateDate(saleData.date);
+  if (!dateValid) {
+    showErrorToast('Please enter a valid date in DD/MM/YYYY format, not in the future.');
+    return;
+  }
+  saleData.date = dateValid;
+
+  if (!saleData.customer) {
+    showErrorToast('Please select a customer.');
+    return;
+  }
+
+  const formValid = validateSaleForm(saleData);
+  if (formValid !== true) {
+    showErrorToast(formValid);
+    return;
+  }
+
+  const spinner = submitBtn.querySelector('.spinner-border');
+  if (spinner) spinner.classList.remove('d-none');
+  submitBtn.innerHTML = '<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span> Adding...';
+  modal.querySelectorAll('input, select, button').forEach(el => el.disabled = true);
+
+  google.script.run
+    .withSuccessHandler(result => {
+      if (result && result.success) {
+        showSuccessToast(result.message);
+        if (!keepOpen) {
+          const saleModal = bootstrap.Modal.getInstance(modal);
+          if (saleModal) saleModal.hide();
+          resetSalesForm();
+        } else {
+          resetSalesForm();
+          modal.querySelectorAll('input, select, button').forEach(el => el.disabled = false);
+          submitBtn.innerHTML = 'Submit';
         }
-      });
-
-      const customerSearch = document.getElementById('customerSearch');
-      if (customerSearch) {
-        customerSearch.addEventListener('input', filterCustomers);
+        loadTableData('sales');
+        loadTableData('dashboard');
+      } else {
+        console.error('Add sale failed:', result?.message);
+        showErrorToast(`Error adding sale: ${result?.message || 'Failed to add sale'}`);
+        modal.querySelectorAll('input, select, button').forEach(el => el.disabled = false);
+        submitBtn.innerHTML = 'Submit';
       }
-
-      const paymentMethodFilter = document.getElementById('paymentMethodFilter');
-      if (paymentMethodFilter) {
-        paymentMethodFilter.addEventListener('change', filterPayments);
-      }
-
-      const transactionCustomerFilter = document.getElementById('transactionCustomerFilter');
-      if (transactionCustomerFilter) {
-        transactionCustomerFilter.addEventListener('change', filterTransactions);
-      }
-
-      document.querySelectorAll('th.sortable').forEach(th => {
-        th.addEventListener('click', () => {
-          const column = th.dataset.column;
-          const tableId = th.closest('table').id;
-          const isDate = column === 'Date';
-          sortTable(tableId, column, isDate);
-        });
-      });
-
-      const salePaymentMethod = document.getElementById('salePaymentMethod');
-      if (salePaymentMethod) {
-        salePaymentMethod.addEventListener('change', () => togglePaymentReceived('salePaymentMethod', 'salePaymentReceived'));
-      }
-
-      const paymentMethod = document.getElementById('paymentMethod');
-      if (paymentMethod) {
-        paymentMethod.addEventListener('change', () => togglePaymentReceived('paymentMethod', 'paymentReceived'));
-      }
+    })
+    .withFailureHandler(err => {
+      console.error('Add sale error:', err);
+      showErrorToast(`Error adding sale: ${err.message || 'Unknown error'}`);
+      modal.querySelectorAll('input, select, button').forEach(el => el.disabled = false);
+      submitBtn.innerHTML = 'Submit';
+    })
+    .addSale({
+      Date: saleData.date,
+      Customer: saleData.customer,
+      Quantity: saleData.quantity,
+      Rate: saleData.rate,
+      'Vehicle Rent': saleData.vehicleRent,
+      Amount: (saleData.quantity * saleData.rate) + saleData.vehicleRent,
+      'Payment Method': saleData.paymentMethod,
+      'Payment Received': saleData.paymentReceived,
+      Remarks: saleData.remarks
     });
+}
+
+function addPayment() {
+  const modal = document.getElementById('paymentModal');
+  const submitBtn = document.getElementById('submitPaymentBtn');
+  const keepOpen = document.getElementById('keepPaymentOpen')?.checked;
+  if (!modal || !submitBtn) return;
+
+  const paymentData = {
+    date: document.getElementById('paymentDate')?.value,
+    customer: document.getElementById('paymentCustomer')?.value,
+    paymentMethod: document.getElementById('paymentMethod')?.value,
+    paymentReceived: parseFloat(document.getElementById('paymentReceived')?.value) || 0,
+    remarks: document.getElementById('paymentRemarks')?.value
+  };
+
+  const dateValid = validateDate(paymentData.date);
+  if (!dateValid) {
+    showErrorToast('Please enter a valid date in DD/MM/YYYY format, not in the future.');
+    return;
+  }
+  paymentData.date = dateValid;
+
+  if (!paymentData.customer) {
+    showErrorToast('Please select a customer.');
+    return;
+  }
+
+  if (!paymentData.paymentMethod) {
+    showErrorToast('Please select a payment method.');
+    return;
+  }
+
+  if (paymentData.paymentReceived <= 0) {
+    showErrorToast('Payment Received must be greater than 0.');
+    return;
+  }
+
+  const spinner = submitBtn.querySelector('.spinner-border');
+  if (spinner) spinner.classList.remove('d-none');
+  submitBtn.innerHTML = '<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span> Adding...';
+  modal.querySelectorAll('input, select, button').forEach(el => el.disabled = true);
+
+  google.script.run
+    .withSuccessHandler(result => {
+      if (result && result.success) {
+        showSuccessToast(result.message);
+        if (!keepOpen) {
+          const paymentModal = bootstrap.Modal.getInstance(modal);
+          if (paymentModal) paymentModal.hide();
+          resetPaymentForm();
+        } else {
+          resetPaymentForm();
+          modal.querySelectorAll('input, select, button').forEach(el => el.disabled = false);
+          submitBtn.innerHTML = 'Submit';
+        }
+        loadTableData('payments');
+        loadTableData('dashboard');
+      } else {
+        console.error('Add payment failed:', result?.message);
+        showErrorToast(`Error adding payment: ${result?.message || 'Failed to add payment'}`);
+        modal.querySelectorAll('input, select, button').forEach(el => el.disabled = false);
+        submitBtn.innerHTML = 'Submit';
+      }
+    })
+    .withFailureHandler(err => {
+      console.error('Add payment error:', err);
+      showErrorToast(`Error adding payment: ${err.message || 'Unknown error'}`);
+      modal.querySelectorAll('input, select, button').forEach(el => el.disabled = false);
+      submitBtn.innerHTML = 'Submit';
+    })
+    .addPayment({
+      Date: paymentData.date,
+      Customer: paymentData.customer,
+      'Payment Method': paymentData.paymentMethod,
+      'Payment Received': paymentData.paymentReceived,
+      Remarks: paymentData.remarks
+    });
+}
+
+function deleteCustomer(id, name) {
+  if (!confirm(`Are you sure you want to delete customer "${name}"?`)) return;
+  google.script.run
+    .withSuccessHandler(result => {
+      if (result && result.success) {
+        showSuccessToast(result.message);
+        loadTableData('customers');
+        populateCustomerDropdowns();
+      } else {
+        console.error('Delete customer failed:', result?.message);
+        showErrorToast(`Error deleting customer: ${result?.message || 'Failed to delete'}`);
+      }
+    })
+    .withFailureHandler(err => {
+      console.error('Delete customer error:', err);
+      showErrorToast(`Error deleting customer: ${err.message || 'Unknown error'}`);
+    })
+    .deleteCustomer(id);
+}
+
+function deleteSale(id, name) {
+  if (!confirm(`Are you sure you want to delete sale "${id}"?`)) return;
+  google.script.run
+    .withSuccessHandler(result => {
+      if (result && result.success) {
+        showSuccessToast(result.message);
+        loadTableData('sales');
+        loadTableData('dashboard');
+      } else {
+        console.error('Delete sale failed:', result?.message);
+        showErrorToast(`Error deleting sale: ${result?.message || 'Failed to delete'}`);
+      }
+    })
+    .withFailureHandler(err => {
+      console.error('Delete sale error:', err);
+      showErrorToast(`Error deleting sale: ${err.message || 'Unknown error'}`);
+    })
+    .deleteSale(id);
+}
+
+function deletePayment(id, name) {
+  if (!confirm(`Are you sure you want to delete payment "${id}"?`)) return;
+  google.script.run
+    .withSuccessHandler(result => {
+      if (result && result.success) {
+        showSuccessToast(result.message);
+        loadTableData('payments');
+        loadTableData('dashboard');
+      } else {
+        console.error('Delete payment failed:', result?.message);
+        showErrorToast(`Error deleting payment: ${result?.message || 'Failed to delete'}`);
+      }
+    })
+    .withFailureHandler(err => {
+      console.error('Delete payment error:', err);
+      showErrorToast(`Error deleting payment: ${err.message || 'Unknown error'}`);
+    })
+    .deletePayment(id);
+}
+
+function togglePaymentReceived(methodId, inputId) {
+  const method = document.getElementById(methodId)?.value;
+  const input = document.getElementById(inputId);
+  if (input) {
+    input.disabled = !method;
+    if (!method) {
+      input.value = '0';
+    } else if (parseFloat(input.value) <= 0) {
+      input.value = '';
+    }
+  }
+}
+
+document.getElementById('theme-toggle')?.addEventListener('click', toggleTheme);
+document.getElementById('customerSearch')?.addEventListener('input', filterCustomers);
+document.getElementById('paymentMethodFilter')?.addEventListener('change', filterPayments);
+document.getElementById('transactionCustomerFilter')?.addEventListener('change', filterTransactions);
+document.getElementById('saleQuantity')?.addEventListener('input', updateSaleAmount);
+document.getElementById('saleRate')?.addEventListener('input', updateSaleAmount);
+document.getElementById('saleVehicleRent')?.addEventListener('input', updateSaleAmount);
+document.getElementById('salePaymentMethod')?.addEventListener('change', () => togglePaymentReceived('salePaymentMethod', 'salePaymentReceived'));
+document.getElementById('paymentMethod')?.addEventListener('change', () => togglePaymentReceived('paymentMethod', 'paymentReceived'));
+document.getElementById('transactionsTable')?.querySelector('th[data-column="Date"]')?.addEventListener('click', () => sortTable('transactionsTable', 'Date', true));
+
+window.addEventListener('load', () => {
+  initializeTheme();
+  initializeFlatpickr();
+  formatCurrencyInputs();
+  setupTabNavigation();
+  loadTableData('dashboard');
+  populateCustomerDropdowns();
+});
   </script>
 </body>
 </html>
